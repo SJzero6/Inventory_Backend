@@ -13,6 +13,7 @@ import unitRoutes from "./routes/unitRoutes";
 import supplierRoutes from "./routes/supplierRoutes";
 import warehouseRoutes from "./routes/warehouseRoutes";
 import warehouseLocationRoutes from "./routes/warehouseLocationRoutes";
+import stockRoutes from "./routes/stockRoutes";
 dotenv.config();
 
 const app = express();
@@ -30,6 +31,7 @@ app.use("/api/units", unitRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/warehouses", warehouseRoutes);
 app.use("/api/warehouse-locations", warehouseLocationRoutes);
+app.use("/api/stock", stockRoutes);
 
 
 const PORT = Number(process.env.PORT) || 5000;
