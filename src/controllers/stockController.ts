@@ -772,3 +772,966 @@ return res.status(500).json({
 });
     }
 }
+
+export async function transferStock(
+    req: AuthRequest,
+    res: Response
+) {
+    const db = getDatabase();
+
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const {
+            productId,
+            fromWarehouseId,
+            fromLocationId,
+            toWarehouseId,
+            toLocationId,
+            batchId,
+            quantity,
+            notes
+        } = req.body;
+
+        const product = Number(productId);
+        const fromWarehouse = Number(fromWarehouseId);
+        const toWarehouse = Number(toWarehouseId);
+        const qty = Number(quantity);
+
+        const fromLocation =
+            fromLocationId === null ||
+            fromLocationId === undefined ||
+            fromLocationId === ""
+                ? null
+                : Number(fromLocationId);
+
+        const toLocation =
+            toLocationId === null ||
+            toLocationId === undefined ||
+            toLocationId === ""
+                ? null
+                : Number(toLocationId);
+
+        const batch =
+            batchId === null ||
+            batchId === undefined ||
+            batchId === ""
+                ? null
+                : Number(batchId);
+
+        // Basic validation
+        if (!Number.isInteger(product)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid product ID"
+            });
+        }
+
+        if (!Number.isInteger(fromWarehouse)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid source warehouse ID"
+            });
+        }
+
+        if (!Number.isInteger(toWarehouse)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid destination warehouse ID"
+            });
+        }
+
+        if (fromLocation !== null && !Number.isInteger(fromLocation)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid source location ID"
+            });
+        }
+
+        if (toLocation !== null && !Number.isInteger(toLocation)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid destination location ID"
+            });
+        }
+
+        if (batch !== null && !Number.isInteger(batch)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid batch ID"
+            });
+        }
+
+        if (!Number.isFinite(qty) || qty <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Transfer quantity must be greater than zero"
+            });
+        }
+
+        // Source and destination cannot be identical
+        if (
+            fromWarehouse === toWarehouse &&
+            fromLocation === toLocation
+        ) {
+            return res.status(400).json({
+                success: false,
+                message: "Source and destination cannot be the same"
+            });
+        }
+
+        const transaction = new sql.Transaction(db);
+
+        await transaction.begin();
+
+        try {
+            /*
+             * 1. Validate Product
+             */
+            const productResult = await new sql.Request(transaction)
+                .input("companyId", req.user.companyId)
+                .input("productId", product)
+                .query(`
+                    SELECT
+                        Id,
+                        IsActive
+                    FROM Products
+                    WHERE
+                        Id = @productId
+                        AND CompanyId = @companyId
+                `);
+
+            if (productResult.recordset.length === 0) {
+                await transaction.rollback();
+
+                return res.status(404).json({
+                    success: false,
+                    message: "Product not found"
+                });
+            }
+
+            if (!productResult.recordset[0].IsActive) {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    success: false,
+                    message: "Product is inactive"
+                });
+            }
+
+            /*
+             * 2. Validate Source Warehouse
+             */
+            const sourceWarehouseResult = await new sql.Request(transaction)
+                .input("companyId", req.user.companyId)
+                .input("warehouseId", fromWarehouse)
+                .query(`
+                    SELECT Id, IsActive
+                    FROM Warehouses
+                    WHERE
+                        Id = @warehouseId
+                        AND CompanyId = @companyId
+                `);
+
+            if (sourceWarehouseResult.recordset.length === 0) {
+                await transaction.rollback();
+
+                return res.status(404).json({
+                    success: false,
+                    message: "Source warehouse not found"
+                });
+            }
+
+            if (!sourceWarehouseResult.recordset[0].IsActive) {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    success: false,
+                    message: "Source warehouse is inactive"
+                });
+            }
+
+            /*
+             * 3. Validate Destination Warehouse
+             */
+            const destinationWarehouseResult =
+                await new sql.Request(transaction)
+                    .input("companyId", req.user.companyId)
+                    .input("warehouseId", toWarehouse)
+                    .query(`
+                        SELECT Id, IsActive
+                        FROM Warehouses
+                        WHERE
+                            Id = @warehouseId
+                            AND CompanyId = @companyId
+                    `);
+
+            if (destinationWarehouseResult.recordset.length === 0) {
+                await transaction.rollback();
+
+                return res.status(404).json({
+                    success: false,
+                    message: "Destination warehouse not found"
+                });
+            }
+
+            if (!destinationWarehouseResult.recordset[0].IsActive) {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    success: false,
+                    message: "Destination warehouse is inactive"
+                });
+            }
+
+            /*
+             * 4. Validate Source Location
+             */
+            if (fromLocation !== null) {
+                const result = await new sql.Request(transaction)
+                    .input("companyId", req.user.companyId)
+                    .input("warehouseId", fromWarehouse)
+                    .input("locationId", fromLocation)
+                    .query(`
+                        SELECT
+                            wl.Id,
+                            wl.IsActive
+                        FROM WarehouseLocations wl
+                        INNER JOIN Warehouses w
+                            ON w.Id = wl.WarehouseId
+                        WHERE
+                            wl.Id = @locationId
+                            AND wl.WarehouseId = @warehouseId
+                            AND w.CompanyId = @companyId
+                    `);
+
+                if (result.recordset.length === 0) {
+                    await transaction.rollback();
+
+                    return res.status(404).json({
+                        success: false,
+                        message: "Source location not found"
+                    });
+                }
+
+                if (!result.recordset[0].IsActive) {
+                    await transaction.rollback();
+
+                    return res.status(400).json({
+                        success: false,
+                        message: "Source location is inactive"
+                    });
+                }
+            }
+
+            /*
+             * 5. Validate Destination Location
+             */
+            if (toLocation !== null) {
+                const result = await new sql.Request(transaction)
+                    .input("companyId", req.user.companyId)
+                    .input("warehouseId", toWarehouse)
+                    .input("locationId", toLocation)
+                    .query(`
+                        SELECT
+                            wl.Id,
+                            wl.IsActive
+                        FROM WarehouseLocations wl
+                        INNER JOIN Warehouses w
+                            ON w.Id = wl.WarehouseId
+                        WHERE
+                            wl.Id = @locationId
+                            AND wl.WarehouseId = @warehouseId
+                            AND w.CompanyId = @companyId
+                    `);
+
+                if (result.recordset.length === 0) {
+                    await transaction.rollback();
+
+                    return res.status(404).json({
+                        success: false,
+                        message: "Destination location not found"
+                    });
+                }
+
+                if (!result.recordset[0].IsActive) {
+                    await transaction.rollback();
+
+                    return res.status(400).json({
+                        success: false,
+                        message: "Destination location is inactive"
+                    });
+                }
+            }
+
+            /*
+             * 6. Validate Batch
+             */
+            if (batch !== null) {
+                const batchResult = await new sql.Request(transaction)
+                    .input("companyId", req.user.companyId)
+                    .input("productId", product)
+                    .input("batchId", batch)
+                    .query(`
+                        SELECT
+                            Id,
+                            IsActive
+                        FROM ProductBatches
+                        WHERE
+                            Id = @batchId
+                            AND ProductId = @productId
+                            AND CompanyId = @companyId
+                    `);
+
+                if (batchResult.recordset.length === 0) {
+                    await transaction.rollback();
+
+                    return res.status(404).json({
+                        success: false,
+                        message: "Product batch not found"
+                    });
+                }
+
+                if (!batchResult.recordset[0].IsActive) {
+                    await transaction.rollback();
+
+                    return res.status(400).json({
+                        success: false,
+                        message: "Product batch is inactive"
+                    });
+                }
+            }
+
+            /*
+             * 7. Find source stock
+             */
+            const sourceStockResult = await new sql.Request(transaction)
+                .input("companyId", req.user.companyId)
+                .input("productId", product)
+                .input("warehouseId", fromWarehouse)
+                .input("locationId", fromLocation)
+                .input("batchId", batch)
+                .query(`
+                    SELECT TOP 1
+                        Id,
+                        Quantity,
+                        AverageCost
+                    FROM Stock
+                    WHERE
+                        CompanyId = @companyId
+                        AND ProductId = @productId
+                        AND WarehouseId = @warehouseId
+                        AND (
+                            LocationId = @locationId
+                            OR (
+                                LocationId IS NULL
+                                AND @locationId IS NULL
+                            )
+                        )
+                        AND (
+                            BatchId = @batchId
+                            OR (
+                                BatchId IS NULL
+                                AND @batchId IS NULL
+                            )
+                        )
+                    `);
+
+            if (sourceStockResult.recordset.length === 0) {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    success: false,
+                    message: "Source stock record does not exist"
+                });
+            }
+
+            const sourceStock = sourceStockResult.recordset[0];
+
+            const sourceQuantity = Number(sourceStock.Quantity);
+            const sourceAverageCost = Number(sourceStock.AverageCost);
+
+            if (sourceQuantity < qty) {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    success: false,
+                    message: `Insufficient stock. Available quantity: ${sourceQuantity}`
+                });
+            }
+
+            const newSourceQuantity = sourceQuantity - qty;
+
+            /*
+             * 8. Update source stock
+             */
+            await new sql.Request(transaction)
+                .input("stockId", sourceStock.Id)
+                .input("quantity", newSourceQuantity)
+                .query(`
+                    UPDATE Stock
+                    SET
+                        Quantity = @quantity,
+                        UpdatedAt = GETDATE()
+                    WHERE Id = @stockId
+                `);
+
+            /*
+             * 9. Find destination stock
+             */
+            const destinationStockResult =
+                await new sql.Request(transaction)
+                    .input("companyId", req.user.companyId)
+                    .input("productId", product)
+                    .input("warehouseId", toWarehouse)
+                    .input("locationId", toLocation)
+                    .input("batchId", batch)
+                    .query(`
+                        SELECT TOP 1
+                            Id,
+                            Quantity,
+                            AverageCost
+                        FROM Stock
+                        WHERE
+                            CompanyId = @companyId
+                            AND ProductId = @productId
+                            AND WarehouseId = @warehouseId
+                            AND (
+                                LocationId = @locationId
+                                OR (
+                                    LocationId IS NULL
+                                    AND @locationId IS NULL
+                                )
+                            )
+                            AND (
+                                BatchId = @batchId
+                                OR (
+                                    BatchId IS NULL
+                                    AND @batchId IS NULL
+                                )
+                            )
+                    `);
+
+            let destinationStockId: number;
+            let newDestinationQuantity: number;
+            let destinationAverageCost: number;
+
+            /*
+             * 10. Update or create destination stock
+             */
+            if (destinationStockResult.recordset.length > 0) {
+
+                const destinationStock =
+                    destinationStockResult.recordset[0];
+
+                const currentDestinationQuantity =
+                    Number(destinationStock.Quantity);
+
+                const currentDestinationAverageCost =
+                    Number(destinationStock.AverageCost);
+
+                newDestinationQuantity =
+                    currentDestinationQuantity + qty;
+
+                if (newDestinationQuantity > 0) {
+                    destinationAverageCost =
+                        (
+                            (currentDestinationQuantity *
+                                currentDestinationAverageCost) +
+                            (qty * sourceAverageCost)
+                        ) / newDestinationQuantity;
+                } else {
+                    destinationAverageCost = sourceAverageCost;
+                }
+
+                await new sql.Request(transaction)
+                    .input("stockId", destinationStock.Id)
+                    .input("quantity", newDestinationQuantity)
+                    .input("averageCost", destinationAverageCost)
+                    .query(`
+                        UPDATE Stock
+                        SET
+                            Quantity = @quantity,
+                            AverageCost = @averageCost,
+                            UpdatedAt = GETDATE()
+                        WHERE Id = @stockId
+                    `);
+
+                destinationStockId = destinationStock.Id;
+
+            } else {
+
+                newDestinationQuantity = qty;
+                destinationAverageCost = sourceAverageCost;
+
+                const insertDestination =
+                    await new sql.Request(transaction)
+                        .input("companyId", req.user.companyId)
+                        .input("productId", product)
+                        .input("warehouseId", toWarehouse)
+                        .input("locationId", toLocation)
+                        .input("batchId", batch)
+                        .input("quantity", newDestinationQuantity)
+                        .input("averageCost", destinationAverageCost)
+                        .query(`
+                            INSERT INTO Stock
+                            (
+                                CompanyId,
+                                ProductId,
+                                WarehouseId,
+                                LocationId,
+                                BatchId,
+                                Quantity,
+                                AverageCost,
+                                UpdatedAt
+                            )
+                            OUTPUT INSERTED.Id
+                            VALUES
+                            (
+                                @companyId,
+                                @productId,
+                                @warehouseId,
+                                @locationId,
+                                @batchId,
+                                @quantity,
+                                @averageCost,
+                                GETDATE()
+                            )
+                        `);
+
+                destinationStockId =
+                    insertDestination.recordset[0].Id;
+            }
+
+            /*
+             * 11. Create one transfer reference
+             *
+             * StockTransactions.ReferenceId is BIGINT.
+             * We use the source transaction ID as the
+             * common transfer reference.
+             */
+            const transferReference =
+                Date.now();
+
+            /*
+             * 12. TRANSFER_OUT
+             */
+            const transferOutResult =
+                await new sql.Request(transaction)
+                    .input("companyId", req.user.companyId)
+                    .input("productId", product)
+                    .input("warehouseId", fromWarehouse)
+                    .input("locationId", fromLocation)
+                    .input("batchId", batch)
+                    .input("transactionType", "TRANSFER_OUT")
+                    .input("referenceType", "STOCK_TRANSFER")
+                    .input("referenceId", transferReference)
+                    .input("quantity", -qty)
+                    .input("unitCost", sourceAverageCost)
+                    .input("createdBy", req.user.userId)
+                    .input("notes", notes?.trim() || null)
+                    .query(`
+                        INSERT INTO StockTransactions
+                        (
+                            CompanyId,
+                            ProductId,
+                            WarehouseId,
+                            LocationId,
+                            BatchId,
+                            TransactionType,
+                            ReferenceType,
+                            ReferenceId,
+                            Quantity,
+                            UnitCost,
+                            TransactionDate,
+                            CreatedBy,
+                            Notes
+                        )
+                        OUTPUT INSERTED.Id
+                        VALUES
+                        (
+                            @companyId,
+                            @productId,
+                            @warehouseId,
+                            @locationId,
+                            @batchId,
+                            @transactionType,
+                            @referenceType,
+                            @referenceId,
+                            @quantity,
+                            @unitCost,
+                            GETDATE(),
+                            @createdBy,
+                            @notes
+                        )
+                    `);
+
+            /*
+             * 13. TRANSFER_IN
+             */
+            const transferInResult =
+                await new sql.Request(transaction)
+                    .input("companyId", req.user.companyId)
+                    .input("productId", product)
+                    .input("warehouseId", toWarehouse)
+                    .input("locationId", toLocation)
+                    .input("batchId", batch)
+                    .input("transactionType", "TRANSFER_IN")
+                    .input("referenceType", "STOCK_TRANSFER")
+                    .input("referenceId", transferReference)
+                    .input("quantity", qty)
+                    .input("unitCost", sourceAverageCost)
+                    .input("createdBy", req.user.userId)
+                    .input("notes", notes?.trim() || null)
+                    .query(`
+                        INSERT INTO StockTransactions
+                        (
+                            CompanyId,
+                            ProductId,
+                            WarehouseId,
+                            LocationId,
+                            BatchId,
+                            TransactionType,
+                            ReferenceType,
+                            ReferenceId,
+                            Quantity,
+                            UnitCost,
+                            TransactionDate,
+                            CreatedBy,
+                            Notes
+                        )
+                        OUTPUT INSERTED.Id
+                        VALUES
+                        (
+                            @companyId,
+                            @productId,
+                            @warehouseId,
+                            @locationId,
+                            @batchId,
+                            @transactionType,
+                            @referenceType,
+                            @referenceId,
+                            @quantity,
+                            @unitCost,
+                            GETDATE(),
+                            @createdBy,
+                            @notes
+                        )
+                    `);
+
+            /*
+             * 14. Commit
+             */
+            await transaction.commit();
+
+            return res.status(200).json({
+                success: true,
+                message: "Stock transferred successfully",
+                referenceId: transferReference,
+                transferOutTransactionId:
+                    transferOutResult.recordset[0].Id,
+                transferInTransactionId:
+                    transferInResult.recordset[0].Id,
+                sourceStockId: sourceStock.Id,
+                destinationStockId,
+                transferredQuantity: qty,
+                sourcePreviousQuantity: sourceQuantity,
+                sourceNewQuantity: newSourceQuantity,
+                destinationNewQuantity: newDestinationQuantity,
+                averageCost: sourceAverageCost
+            });
+
+        } catch (error) {
+
+            console.error("Stock transfer transaction error:", error);
+
+            try {
+                await transaction.rollback();
+            } catch (rollbackError) {
+                console.error("Rollback error:", rollbackError);
+            }
+
+            throw error;
+        }
+
+    } catch (error) {
+
+        console.error("Transfer stock error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to transfer stock"
+        });
+    }
+}
+
+export async function getStockTransactions(
+    req: AuthRequest,
+    res: Response
+) {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const {
+            productId,
+            warehouseId,
+            locationId,
+            batchId,
+            transactionType,
+            dateFrom,
+            dateTo
+        } = req.query;
+
+        const request = new sql.Request();
+
+        request.input("companyId", req.user.companyId);
+
+        let query = `
+            SELECT
+                st.Id,
+                st.CompanyId,
+                st.ProductId,
+                p.ProductCode,
+                p.Name AS ProductName,
+
+                st.WarehouseId,
+                w.Name AS WarehouseName,
+
+                st.LocationId,
+                wl.Name AS LocationName,
+
+                st.BatchId,
+                pb.BatchNumber,
+
+                st.TransactionType,
+                st.ReferenceType,
+                st.ReferenceId,
+
+                st.Quantity,
+                st.UnitCost,
+                st.TransactionDate,
+
+                st.CreatedBy,
+                u.Name AS CreatedByName,
+
+                st.Notes
+
+            FROM StockTransactions st
+
+            INNER JOIN Products p
+                ON p.Id = st.ProductId
+
+            INNER JOIN Warehouses w
+                ON w.Id = st.WarehouseId
+
+            LEFT JOIN WarehouseLocations wl
+                ON wl.Id = st.LocationId
+
+            LEFT JOIN ProductBatches pb
+                ON pb.Id = st.BatchId
+
+            LEFT JOIN Users u
+                ON u.Id = st.CreatedBy
+
+            WHERE st.CompanyId = @companyId
+        `;
+
+        if (productId) {
+            query += ` AND st.ProductId = @productId`;
+            request.input("productId", Number(productId));
+        }
+
+        if (warehouseId) {
+            query += ` AND st.WarehouseId = @warehouseId`;
+            request.input("warehouseId", Number(warehouseId));
+        }
+
+        if (locationId !== undefined) {
+            if (locationId === "null") {
+                query += ` AND st.LocationId IS NULL`;
+            } else {
+                query += ` AND st.LocationId = @locationId`;
+                request.input("locationId", Number(locationId));
+            }
+        }
+
+        if (batchId !== undefined) {
+            if (batchId === "null") {
+                query += ` AND st.BatchId IS NULL`;
+            } else {
+                query += ` AND st.BatchId = @batchId`;
+                request.input("batchId", Number(batchId));
+            }
+        }
+
+        if (transactionType) {
+            query += ` AND st.TransactionType = @transactionType`;
+            request.input(
+                "transactionType",
+                String(transactionType)
+            );
+        }
+
+        if (dateFrom) {
+            query += ` AND st.TransactionDate >= @dateFrom`;
+            request.input(
+                "dateFrom",
+                new Date(String(dateFrom))
+            );
+        }
+
+        if (dateTo) {
+            query += ` AND st.TransactionDate < DATEADD(DAY, 1, @dateTo)`;
+            request.input(
+                "dateTo",
+                new Date(String(dateTo))
+            );
+        }
+
+        query += `
+            ORDER BY st.TransactionDate DESC, st.Id DESC
+        `;
+
+        const result = await request.query(query);
+
+        return res.status(200).json({
+            success: true,
+            count: result.recordset.length,
+            transactions: result.recordset
+        });
+
+    } catch (error) {
+
+        console.error("Get stock transactions error:", error);
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to get stock transactions"
+        });
+    }
+}
+
+export async function getStockTransactionById(
+    req: AuthRequest,
+    res: Response
+) {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const id = Number(req.params.id);
+
+        if (!Number.isInteger(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid transaction ID"
+            });
+        }
+
+        const request = new sql.Request();
+
+        request
+            .input("companyId", req.user.companyId)
+            .input("id", id);
+
+        const result = await request.query(`
+            SELECT
+                st.Id,
+                st.CompanyId,
+
+                st.ProductId,
+                p.ProductCode,
+                p.Name AS ProductName,
+
+                st.WarehouseId,
+                w.Name AS WarehouseName,
+
+                st.LocationId,
+                wl.Name AS LocationName,
+
+                st.BatchId,
+                pb.BatchNumber,
+
+                st.TransactionType,
+                st.ReferenceType,
+                st.ReferenceId,
+
+                st.Quantity,
+                st.UnitCost,
+                st.TransactionDate,
+
+                st.CreatedBy,
+                u.Name AS CreatedByName,
+
+                st.Notes
+
+            FROM StockTransactions st
+
+            INNER JOIN Products p
+                ON p.Id = st.ProductId
+
+            INNER JOIN Warehouses w
+                ON w.Id = st.WarehouseId
+
+            LEFT JOIN WarehouseLocations wl
+                ON wl.Id = st.LocationId
+
+            LEFT JOIN ProductBatches pb
+                ON pb.Id = st.BatchId
+
+            LEFT JOIN Users u
+                ON u.Id = st.CreatedBy
+
+            WHERE
+                st.Id = @id
+                AND st.CompanyId = @companyId
+        `);
+
+        if (result.recordset.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Stock transaction not found"
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            transaction: result.recordset[0]
+        });
+
+    } catch (error) {
+
+        console.error(
+            "Get stock transaction by ID error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to get stock transaction"
+        });
+    }
+}
