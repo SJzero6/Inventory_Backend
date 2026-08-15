@@ -2,7 +2,8 @@ import { Router } from "express";
 
 import {
     getStock,
-    getStockById
+    getStockById,
+    adjustStock
 } from "../controllers/stockController";
 
 import {
@@ -27,6 +28,13 @@ router.get(
     authenticate,
     authorize("STOCK_VIEW"),
     getStockById
+);
+
+router.post(
+    "/adjust",
+    authenticate,
+    authorize("STOCK_ADJUST"),
+    adjustStock
 );
 
 export default router;
