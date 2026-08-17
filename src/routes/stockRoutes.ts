@@ -19,6 +19,11 @@ import {
 
 const router = Router();
 
+
+// =========================
+// STOCK
+// =========================
+
 router.get(
     "/",
     authenticate,
@@ -26,12 +31,29 @@ router.get(
     getStock
 );
 
+
+// =========================
+// STOCK TRANSACTIONS
+// =========================
+
 router.get(
-    "/:id",
+    "/transactions",
     authenticate,
-    authorize("STOCK_VIEW"),
-    getStockById
+    authorize("REPORT_TRANSACTION"),
+    getStockTransactions
 );
+
+router.get(
+    "/transactions/:id",
+    authenticate,
+    authorize("REPORT_TRANSACTION"),
+    getStockTransactionById
+);
+
+
+// =========================
+// STOCK OPERATIONS
+// =========================
 
 router.post(
     "/adjust",
@@ -47,18 +69,18 @@ router.post(
     transferStock
 );
 
-router.get(
-    "/transactions",
-    authenticate,
-    authorize("REPORT_TRANSACTION"),
-    getStockTransactions
-);
+
+// =========================
+// STOCK BY ID
+// IMPORTANT: Keep this LAST
+// =========================
 
 router.get(
-    "/transactions/:id",
+    "/:id",
     authenticate,
-    authorize("REPORT_TRANSACTION"),
-    getStockTransactionById
+    authorize("STOCK_VIEW"),
+    getStockById
 );
+
 
 export default router;

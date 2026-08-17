@@ -1503,6 +1503,7 @@ export async function getStockTransactions(
             SELECT
                 st.Id,
                 st.CompanyId,
+
                 st.ProductId,
                 p.ProductCode,
                 p.Name AS ProductName,
@@ -1525,7 +1526,7 @@ export async function getStockTransactions(
                 st.TransactionDate,
 
                 st.CreatedBy,
-                u.Name AS CreatedByName,
+                u.FullName AS CreatedByName,
 
                 st.Notes
 
@@ -1546,39 +1547,73 @@ export async function getStockTransactions(
             LEFT JOIN Users u
                 ON u.Id = st.CreatedBy
 
-            WHERE st.CompanyId = @companyId
+            WHERE
+                st.CompanyId = @companyId
         `;
 
         if (productId) {
             query += ` AND st.ProductId = @productId`;
-            request.input("productId", Number(productId));
+
+            request.input(
+                "productId",
+                Number(productId)
+            );
         }
 
         if (warehouseId) {
             query += ` AND st.WarehouseId = @warehouseId`;
-            request.input("warehouseId", Number(warehouseId));
+
+            request.input(
+                "warehouseId",
+                Number(warehouseId)
+            );
         }
 
         if (locationId !== undefined) {
             if (locationId === "null") {
-                query += ` AND st.LocationId IS NULL`;
+
+                query += `
+                    AND st.LocationId IS NULL
+                `;
+
             } else {
-                query += ` AND st.LocationId = @locationId`;
-                request.input("locationId", Number(locationId));
+
+                query += `
+                    AND st.LocationId = @locationId
+                `;
+
+                request.input(
+                    "locationId",
+                    Number(locationId)
+                );
             }
         }
 
         if (batchId !== undefined) {
             if (batchId === "null") {
-                query += ` AND st.BatchId IS NULL`;
+
+                query += `
+                    AND st.BatchId IS NULL
+                `;
+
             } else {
-                query += ` AND st.BatchId = @batchId`;
-                request.input("batchId", Number(batchId));
+
+                query += `
+                    AND st.BatchId = @batchId
+                `;
+
+                request.input(
+                    "batchId",
+                    Number(batchId)
+                );
             }
         }
 
         if (transactionType) {
-            query += ` AND st.TransactionType = @transactionType`;
+            query += `
+                AND st.TransactionType = @transactionType
+            `;
+
             request.input(
                 "transactionType",
                 String(transactionType)
@@ -1586,7 +1621,10 @@ export async function getStockTransactions(
         }
 
         if (dateFrom) {
-            query += ` AND st.TransactionDate >= @dateFrom`;
+            query += `
+                AND st.TransactionDate >= @dateFrom
+            `;
+
             request.input(
                 "dateFrom",
                 new Date(String(dateFrom))
@@ -1594,7 +1632,10 @@ export async function getStockTransactions(
         }
 
         if (dateTo) {
-            query += ` AND st.TransactionDate < DATEADD(DAY, 1, @dateTo)`;
+            query += `
+                AND st.TransactionDate < DATEADD(DAY, 1, @dateTo)
+            `;
+
             request.input(
                 "dateTo",
                 new Date(String(dateTo))
@@ -1602,7 +1643,9 @@ export async function getStockTransactions(
         }
 
         query += `
-            ORDER BY st.TransactionDate DESC, st.Id DESC
+            ORDER BY
+                st.TransactionDate DESC,
+                st.Id DESC
         `;
 
         const result = await request.query(query);
@@ -1615,7 +1658,10 @@ export async function getStockTransactions(
 
     } catch (error) {
 
-        console.error("Get stock transactions error:", error);
+        console.error(
+            "Get stock transactions error:",
+            error
+        );
 
         return res.status(500).json({
             success: false,
@@ -1681,7 +1727,7 @@ export async function getStockTransactionById(
                 st.TransactionDate,
 
                 st.CreatedBy,
-                u.Name AS CreatedByName,
+                u.FullName AS CreatedByName,
 
                 st.Notes
 
