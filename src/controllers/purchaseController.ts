@@ -643,3 +643,600 @@ export async function getPurchaseOrderById(
         });
     }
 }
+
+export async function updatePurchaseOrder(
+    req: AuthRequest,
+    res: Response
+) {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const purchaseOrderId = Number(req.params.id);
+
+        if (!Number.isInteger(purchaseOrderId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid purchase order ID"
+            });
+        }
+
+        const {
+            branchId,
+            warehouseId,
+            supplierId,
+            purchaseOrderNumber,
+            orderDate,
+            discountAmount = 0,
+            notes,
+            items
+        } = req.body;
+
+        if (
+            !branchId ||
+            !warehouseId ||
+            !supplierId ||
+            !purchaseOrderNumber ||
+            !orderDate
+        ) {
+            return res.status(400).json({
+                success: false,
+                message:
+                    "Branch, warehouse, supplier, PO number and order date are required"
+            });
+        }
+
+        if (!Array.isArray(items) || items.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "At least one purchase item is required"
+            });
+        }
+
+        const db = getDatabase();
+        const transaction = new sql.Transaction(db);
+
+        await transaction.begin();
+
+        try {
+
+            // ============================================
+            // GET EXISTING PURCHASE ORDER
+            // ============================================
+
+            const existingRequest =
+                new sql.Request(transaction);
+
+            existingRequest
+                .input(
+                    "id",
+                    purchaseOrderId
+                )
+                .input(
+                    "companyId",
+                    req.user.companyId
+                );
+
+            const existingResult =
+                await existingRequest.query(`
+                    SELECT
+                        Id,
+                        Status
+                    FROM PurchaseOrders
+                    WHERE
+                        Id = @id
+                        AND CompanyId = @companyId
+                `);
+
+            if (existingResult.recordset.length === 0) {
+                await transaction.rollback();
+
+                return res.status(404).json({
+                    success: false,
+                    message: "Purchase order not found"
+                });
+            }
+
+            const existingPO =
+                existingResult.recordset[0];
+
+            // ============================================
+            // ONLY DRAFT CAN BE EDITED
+            // ============================================
+
+            if (existingPO.Status !== "DRAFT") {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        `Purchase order cannot be edited because its status is ${existingPO.Status}`
+                });
+            }
+
+            // ============================================
+            // CHECK DUPLICATE PO NUMBER
+            // ============================================
+
+            const duplicateRequest =
+                new sql.Request(transaction);
+
+            duplicateRequest
+                .input(
+                    "companyId",
+                    req.user.companyId
+                )
+                .input(
+                    "purchaseOrderNumber",
+                    purchaseOrderNumber
+                )
+                .input(
+                    "id",
+                    purchaseOrderId
+                );
+
+            const duplicateResult =
+                await duplicateRequest.query(`
+                    SELECT Id
+                    FROM PurchaseOrders
+                    WHERE
+                        CompanyId = @companyId
+                        AND PurchaseOrderNumber = @purchaseOrderNumber
+                        AND Id <> @id
+                `);
+
+            if (duplicateResult.recordset.length > 0) {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Purchase order number already exists"
+                });
+            }
+
+            // ============================================
+            // CALCULATE TOTALS
+            // ============================================
+
+            let subTotal = 0;
+            let taxAmount = 0;
+
+            for (const item of items) {
+
+                const quantity =
+                    Number(item.orderedQuantity);
+
+                const unitCost =
+                    Number(item.unitCost);
+
+                const itemDiscount =
+                    Number(item.discountAmount || 0);
+
+                const itemTax =
+                    Number(item.taxAmount || 0);
+
+                if (
+                    !item.productId ||
+                    quantity <= 0 ||
+                    unitCost < 0
+                ) {
+                    await transaction.rollback();
+
+                    return res.status(400).json({
+                        success: false,
+                        message: "Invalid purchase item"
+                    });
+                }
+
+                const itemSubtotal =
+                    quantity * unitCost;
+
+                subTotal +=
+                    itemSubtotal - itemDiscount;
+
+                taxAmount += itemTax;
+            }
+
+            const totalDiscount =
+                Number(discountAmount || 0);
+
+            const totalAmount =
+                subTotal +
+                taxAmount -
+                totalDiscount;
+
+            if (totalAmount < 0) {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Total amount cannot be negative"
+                });
+            }
+
+            // ============================================
+            // UPDATE PURCHASE ORDER
+            // ============================================
+
+            const updateRequest =
+                new sql.Request(transaction);
+
+            updateRequest
+                .input(
+                    "id",
+                    purchaseOrderId
+                )
+                .input(
+                    "branchId",
+                    Number(branchId)
+                )
+                .input(
+                    "warehouseId",
+                    Number(warehouseId)
+                )
+                .input(
+                    "supplierId",
+                    Number(supplierId)
+                )
+                .input(
+                    "purchaseOrderNumber",
+                    purchaseOrderNumber
+                )
+                .input(
+                    "orderDate",
+                    new Date(orderDate)
+                )
+                .input(
+                    "subTotal",
+                    subTotal
+                )
+                .input(
+                    "taxAmount",
+                    taxAmount
+                )
+                .input(
+                    "discountAmount",
+                    totalDiscount
+                )
+                .input(
+                    "totalAmount",
+                    totalAmount
+                )
+                .input(
+                    "notes",
+                    notes || null
+                );
+
+            await updateRequest.query(`
+                UPDATE PurchaseOrders
+                SET
+                    BranchId = @branchId,
+                    WarehouseId = @warehouseId,
+                    SupplierId = @supplierId,
+                    PurchaseOrderNumber = @purchaseOrderNumber,
+                    OrderDate = @orderDate,
+                    SubTotal = @subTotal,
+                    TaxAmount = @taxAmount,
+                    DiscountAmount = @discountAmount,
+                    TotalAmount = @totalAmount,
+                    Notes = @notes,
+                    UpdatedAt = GETDATE()
+                WHERE
+                    Id = @id
+            `);
+
+            // ============================================
+            // DELETE OLD ITEMS
+            // ============================================
+
+            const deleteItemsRequest =
+                new sql.Request(transaction);
+
+            deleteItemsRequest.input(
+                "purchaseOrderId",
+                purchaseOrderId
+            );
+
+            await deleteItemsRequest.query(`
+                DELETE FROM PurchaseOrderItems
+                WHERE PurchaseOrderId = @purchaseOrderId
+            `);
+
+            // ============================================
+            // INSERT NEW ITEMS
+            // ============================================
+
+            for (const item of items) {
+
+                const quantity =
+                    Number(item.orderedQuantity);
+
+                const unitCost =
+                    Number(item.unitCost);
+
+                const itemDiscount =
+                    Number(item.discountAmount || 0);
+
+                const itemTax =
+                    Number(item.taxAmount || 0);
+
+                const total =
+                    (quantity * unitCost)
+                    - itemDiscount
+                    + itemTax;
+
+                const itemRequest =
+                    new sql.Request(transaction);
+
+                itemRequest
+                    .input(
+                        "purchaseOrderId",
+                        purchaseOrderId
+                    )
+                    .input(
+                        "productId",
+                        Number(item.productId)
+                    )
+                    .input(
+                        "orderedQuantity",
+                        quantity
+                    )
+                    .input(
+                        "unitCost",
+                        unitCost
+                    )
+                    .input(
+                        "discountAmount",
+                        itemDiscount
+                    )
+                    .input(
+                        "taxAmount",
+                        itemTax
+                    )
+                    .input(
+                        "totalAmount",
+                        total
+                    )
+                    .input(
+                        "receivedQuantity",
+                        0
+                    )
+                    .input(
+                        "notes",
+                        item.notes || null
+                    );
+
+                await itemRequest.query(`
+                    INSERT INTO PurchaseOrderItems
+                    (
+                        PurchaseOrderId,
+                        ProductId,
+                        OrderedQuantity,
+                        UnitCost,
+                        DiscountAmount,
+                        TaxAmount,
+                        TotalAmount,
+                        ReceivedQuantity,
+                        Notes
+                    )
+                    VALUES
+                    (
+                        @purchaseOrderId,
+                        @productId,
+                        @orderedQuantity,
+                        @unitCost,
+                        @discountAmount,
+                        @taxAmount,
+                        @totalAmount,
+                        @receivedQuantity,
+                        @notes
+                    )
+                `);
+            }
+
+            await transaction.commit();
+
+            return res.status(200).json({
+                success: true,
+                message:
+                    "Purchase order updated successfully",
+                purchaseOrderId
+            });
+
+        } catch (error) {
+
+            await transaction.rollback();
+            throw error;
+        }
+
+    } catch (error) {
+
+        console.error(
+            "Update purchase order error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to update purchase order"
+        });
+    }
+}
+
+export async function approvePurchaseOrder(
+    req: AuthRequest,
+    res: Response
+) {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const purchaseOrderId =
+            Number(req.params.id);
+
+        if (!Number.isInteger(purchaseOrderId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid purchase order ID"
+            });
+        }
+
+        const db = getDatabase();
+        const transaction = new sql.Transaction(db);
+
+        await transaction.begin();
+
+        try {
+
+            // ============================================
+            // GET PURCHASE ORDER
+            // ============================================
+
+            const request =
+                new sql.Request(transaction);
+
+            request
+                .input(
+                    "id",
+                    purchaseOrderId
+                )
+                .input(
+                    "companyId",
+                    req.user.companyId
+                );
+
+            const result =
+                await request.query(`
+                    SELECT
+                        Id,
+                        Status
+                    FROM PurchaseOrders
+                    WHERE
+                        Id = @id
+                        AND CompanyId = @companyId
+                `);
+
+            if (result.recordset.length === 0) {
+                await transaction.rollback();
+
+                return res.status(404).json({
+                    success: false,
+                    message: "Purchase order not found"
+                });
+            }
+
+            const purchaseOrder =
+                result.recordset[0];
+
+            // ============================================
+            // CHECK STATUS
+            // ============================================
+
+            if (purchaseOrder.Status !== "DRAFT") {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        `Purchase order cannot be approved because its status is ${purchaseOrder.Status}`
+                });
+            }
+
+            // ============================================
+            // CHECK ITEMS
+            // ============================================
+
+            const itemsRequest =
+                new sql.Request(transaction);
+
+            itemsRequest.input(
+                "purchaseOrderId",
+                purchaseOrderId
+            );
+
+            const itemsResult =
+                await itemsRequest.query(`
+                    SELECT
+                        Id,
+                        ProductId,
+                        OrderedQuantity
+                    FROM PurchaseOrderItems
+                    WHERE PurchaseOrderId = @purchaseOrderId
+                `);
+
+            if (itemsResult.recordset.length === 0) {
+                await transaction.rollback();
+
+                return res.status(400).json({
+                    success: false,
+                    message:
+                        "Cannot approve purchase order without items"
+                });
+            }
+
+            // ============================================
+            // APPROVE
+            // ============================================
+
+            const approveRequest =
+                new sql.Request(transaction);
+
+            approveRequest
+                .input(
+                    "id",
+                    purchaseOrderId
+                );
+
+            await approveRequest.query(`
+                UPDATE PurchaseOrders
+                SET
+                    Status = 'APPROVED',
+                    UpdatedAt = GETDATE()
+                WHERE
+                    Id = @id
+            `);
+
+            await transaction.commit();
+
+            return res.status(200).json({
+                success: true,
+                message:
+                    "Purchase order approved successfully",
+                purchaseOrderId
+            });
+
+        } catch (error) {
+
+            await transaction.rollback();
+            throw error;
+        }
+
+    } catch (error) {
+
+        console.error(
+            "Approve purchase order error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to approve purchase order"
+        });
+    }
+}

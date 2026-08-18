@@ -3,7 +3,9 @@ import { Router } from "express";
 import {
     createPurchaseOrder,
     getPurchaseOrders,
-    getPurchaseOrderById
+    getPurchaseOrderById,
+    updatePurchaseOrder,
+    approvePurchaseOrder
 } from "../controllers/purchaseController";
 
 import {
@@ -19,10 +21,9 @@ const router = Router();
 
 
 // =====================================================
-// PURCHASE ORDERS
+// CREATE PURCHASE ORDER
 // =====================================================
 
-// POST /api/purchases
 router.post(
     "/",
     authenticate,
@@ -31,7 +32,10 @@ router.post(
 );
 
 
-// GET /api/purchases
+// =====================================================
+// GET PURCHASE ORDERS
+// =====================================================
+
 router.get(
     "/",
     authenticate,
@@ -40,7 +44,35 @@ router.get(
 );
 
 
-// GET /api/purchases/:id
+// =====================================================
+// UPDATE PURCHASE ORDER
+// =====================================================
+
+router.put(
+    "/:id",
+    authenticate,
+    authorize("PURCHASE_EDIT"),
+    updatePurchaseOrder
+);
+
+
+// =====================================================
+// APPROVE PURCHASE ORDER
+// =====================================================
+
+router.post(
+    "/:id/approve",
+    authenticate,
+    authorize("PURCHASE_APPROVE"),
+    approvePurchaseOrder
+);
+
+
+// =====================================================
+// GET PURCHASE ORDER BY ID
+// IMPORTANT: KEEP THIS AFTER SPECIFIC ROUTES
+// =====================================================
+
 router.get(
     "/:id",
     authenticate,
