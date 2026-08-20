@@ -1,7 +1,7 @@
 import { Router } from "express";
 
 import {
-    dashboard
+    getDashboard
 } from "../controllers/dashboardController";
 
 import {
@@ -12,13 +12,16 @@ import {
     authorize
 } from "../middleware/permissionMiddleware";
 
+
 const router = Router();
+
 
 router.get(
     "/",
     authenticate,
     authorize("DASHBOARD_VIEW"),
-    dashboard
+    getDashboard
 );
+
 
 export default router;
