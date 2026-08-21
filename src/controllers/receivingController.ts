@@ -405,20 +405,18 @@ export async function createGoodsReceipt(
                     );
 
                 const poItemResult =
-                    await poItemRequest.query(`
-                        SELECT TOP 1
-                            Id,
-                            OrderedQuantity,
-                            ReceivedQuantity,
-                            UnitCost
-                        FROM PurchaseOrderItems
-                        WHERE
-                            PurchaseOrderId =
-                            @purchaseOrderId
-                            AND ProductId =
-                            @productId
-                        ORDER BY Id
-                    `);
+    await poItemRequest.query(`
+        SELECT TOP 1
+            Id,
+            OrderedQuantity,
+            ReceivedQuantity,
+            UnitCost
+        FROM PurchaseOrderItems WITH (UPDLOCK, ROWLOCK)
+        WHERE
+            PurchaseOrderId = @purchaseOrderId
+            AND ProductId = @productId
+        ORDER BY Id
+    `);
 
                 if (poItemResult.recordset.length === 0) {
                     await transaction.rollback();

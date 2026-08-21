@@ -5,7 +5,8 @@ import {
     getPurchaseOrders,
     getPurchaseOrderById,
     updatePurchaseOrder,
-    approvePurchaseOrder
+    approvePurchaseOrder,
+    getPurchaseOrderReceivingStatus
 } from "../controllers/purchaseController";
 
 import {
@@ -43,6 +44,13 @@ router.get(
     getPurchaseOrders
 );
 
+
+router.get(
+    "/:id/receiving-status",
+    authenticate,
+    authorize("PURCHASE_VIEW"),
+    getPurchaseOrderReceivingStatus
+);
 
 // =====================================================
 // UPDATE PURCHASE ORDER

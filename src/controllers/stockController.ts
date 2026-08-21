@@ -1781,3 +1781,490 @@ export async function getStockTransactionById(
         });
     }
 }
+
+// =====================================================
+// GET STOCK ADJUSTMENTS
+// =====================================================
+
+export async function getStockAdjustments(
+    req: AuthRequest,
+    res: Response
+) {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const db = getDatabase();
+
+        const request = db.request()
+            .input("companyId", req.user.companyId);
+
+        const result = await request.query(`
+            SELECT
+                sa.Id,
+                sa.CompanyId,
+                sa.WarehouseId,
+                w.Name AS WarehouseName,
+                sa.Reason,
+                sa.Status,
+                sa.CreatedBy,
+                u.FullName AS CreatedByName,
+                sa.CreatedAt
+            FROM StockAdjustments sa
+
+            LEFT JOIN Warehouses w
+                ON w.Id = sa.WarehouseId
+
+            LEFT JOIN Users u
+                ON u.Id = sa.CreatedBy
+
+            WHERE sa.CompanyId = @companyId
+
+            ORDER BY
+                sa.Id DESC
+        `);
+
+        return res.status(200).json({
+            success: true,
+            data: result.recordset
+        });
+
+    } catch (error) {
+
+        console.error(
+            "Get stock adjustments error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to get stock adjustments"
+        });
+    }
+}
+
+// =====================================================
+// GET STOCK ADJUSTMENT BY ID
+// =====================================================
+
+export async function getStockAdjustmentById(
+    req: AuthRequest,
+    res: Response
+) {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const adjustmentId =
+            Number(req.params.id);
+
+        if (!Number.isInteger(adjustmentId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid adjustment ID"
+            });
+        }
+
+        const db = getDatabase();
+
+        // =============================================
+        // HEADER
+        // =============================================
+
+        const headerRequest = db.request()
+            .input("id", adjustmentId)
+            .input("companyId", req.user.companyId);
+
+        const headerResult =
+            await headerRequest.query(`
+                SELECT
+                    sa.Id,
+                    sa.CompanyId,
+                    sa.WarehouseId,
+                    w.Name AS WarehouseName,
+                    sa.Reason,
+                    sa.Status,
+                    sa.CreatedBy,
+                    u.FullName AS CreatedByName,
+                    sa.CreatedAt
+                FROM StockAdjustments sa
+
+                LEFT JOIN Warehouses w
+                    ON w.Id = sa.WarehouseId
+
+                LEFT JOIN Users u
+                    ON u.Id = sa.CreatedBy
+
+                WHERE
+                    sa.Id = @id
+                    AND sa.CompanyId = @companyId
+            `);
+
+        if (headerResult.recordset.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Stock adjustment not found"
+            });
+        }
+
+        // =============================================
+        // ITEMS
+        // =============================================
+
+        const itemsRequest = db.request()
+            .input(
+                "adjustmentId",
+                adjustmentId
+            );
+
+        const itemsResult =
+            await itemsRequest.query(`
+                SELECT
+                    sai.Id,
+                    sai.StockAdjustmentId,
+                    sai.ProductId,
+                    p.ProductCode,
+                    p.Name AS ProductName,
+                    sai.LocationId,
+                    wl.Name AS LocationName,
+                    sai.BatchId,
+                    pb.BatchNumber,
+                    sai.Quantity,
+                    sai.AdjustmentType,
+                    sai.UnitCost,
+                    sai.Notes
+                FROM StockAdjustmentItems sai
+
+                INNER JOIN Products p
+                    ON p.Id = sai.ProductId
+
+                LEFT JOIN WarehouseLocations wl
+                    ON wl.Id = sai.LocationId
+
+                LEFT JOIN ProductBatches pb
+                    ON pb.Id = sai.BatchId
+
+                WHERE
+                    sai.StockAdjustmentId =
+                        @adjustmentId
+
+                ORDER BY
+                    sai.Id
+            `);
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                adjustment:
+                    headerResult.recordset[0],
+
+                items:
+                    itemsResult.recordset
+            }
+        });
+
+    } catch (error) {
+
+        console.error(
+            "Get stock adjustment by ID error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to get stock adjustment"
+        });
+    }
+}
+
+// =====================================================
+// GET STOCK TRANSFERS
+// =====================================================
+
+export async function getStockTransfers(
+    req: AuthRequest,
+    res: Response
+) {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const db = getDatabase();
+
+        const request = db.request()
+            .input("companyId", req.user.companyId);
+
+        const result = await request.query(`
+            SELECT
+                st.Id,
+                st.CompanyId,
+
+                st.FromBranchId,
+                fb.Name AS FromBranchName,
+
+                st.FromWarehouseId,
+                fw.Name AS FromWarehouseName,
+
+                st.ToBranchId,
+                tb.Name AS ToBranchName,
+
+                st.ToWarehouseId,
+                tw.Name AS ToWarehouseName,
+
+                st.TransferNumber,
+                st.TransferDate,
+                st.Status,
+                st.Notes,
+
+                st.CreatedBy,
+                u.FullName AS CreatedByName,
+
+                st.CreatedAt,
+                st.UpdatedAt
+
+            FROM StockTransfers st
+
+            LEFT JOIN Branches fb
+                ON fb.Id = st.FromBranchId
+
+            LEFT JOIN Warehouses fw
+                ON fw.Id = st.FromWarehouseId
+
+            LEFT JOIN Branches tb
+                ON tb.Id = st.ToBranchId
+
+            LEFT JOIN Warehouses tw
+                ON tw.Id = st.ToWarehouseId
+
+            LEFT JOIN Users u
+                ON u.Id = st.CreatedBy
+
+            WHERE
+                st.CompanyId = @companyId
+
+            ORDER BY
+                st.TransferDate DESC,
+                st.Id DESC
+        `);
+
+        return res.status(200).json({
+            success: true,
+            data: result.recordset
+        });
+
+    } catch (error) {
+
+        console.error(
+            "Get stock transfers error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to get stock transfers"
+        });
+    }
+}
+
+// =====================================================
+// GET STOCK TRANSFER BY ID
+// =====================================================
+
+export async function getStockTransferById(
+    req: AuthRequest,
+    res: Response
+) {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const transferId =
+            Number(req.params.id);
+
+        if (!Number.isInteger(transferId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid transfer ID"
+            });
+        }
+
+        const db = getDatabase();
+
+        // =============================================
+        // HEADER
+        // =============================================
+
+        const headerRequest = db.request()
+            .input("id", transferId)
+            .input(
+                "companyId",
+                req.user.companyId
+            );
+
+        const headerResult =
+            await headerRequest.query(`
+                SELECT
+                    st.Id,
+                    st.CompanyId,
+
+                    st.FromBranchId,
+                    fb.Name AS FromBranchName,
+
+                    st.FromWarehouseId,
+                    fw.Name AS FromWarehouseName,
+
+                    st.ToBranchId,
+                    tb.Name AS ToBranchName,
+
+                    st.ToWarehouseId,
+                    tw.Name AS ToWarehouseName,
+
+                    st.TransferNumber,
+                    st.TransferDate,
+                    st.Status,
+                    st.Notes,
+
+                    st.CreatedBy,
+                    u.FullName AS CreatedByName,
+
+                    st.CreatedAt,
+                    st.UpdatedAt
+
+                FROM StockTransfers st
+
+                LEFT JOIN Branches fb
+                    ON fb.Id = st.FromBranchId
+
+                LEFT JOIN Warehouses fw
+                    ON fw.Id = st.FromWarehouseId
+
+                LEFT JOIN Branches tb
+                    ON tb.Id = st.ToBranchId
+
+                LEFT JOIN Warehouses tw
+                    ON tw.Id = st.ToWarehouseId
+
+                LEFT JOIN Users u
+                    ON u.Id = st.CreatedBy
+
+                WHERE
+                    st.Id = @id
+                    AND st.CompanyId = @companyId
+            `);
+
+        if (headerResult.recordset.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Stock transfer not found"
+            });
+        }
+
+        // =============================================
+        // ITEMS
+        // =============================================
+
+        const itemsRequest = db.request()
+            .input(
+                "transferId",
+                transferId
+            );
+
+        const itemsResult =
+            await itemsRequest.query(`
+                SELECT
+                    sti.Id,
+                    sti.StockTransferId,
+
+                    sti.ProductId,
+                    p.ProductCode,
+                    p.Name AS ProductName,
+
+                    sti.BatchId,
+                    pb.BatchNumber,
+
+                    sti.Quantity,
+
+                    sti.FromLocationId,
+                    fl.Name AS FromLocationName,
+
+                    sti.ToLocationId,
+                    tl.Name AS ToLocationName,
+
+                    sti.UnitCost,
+                    sti.Notes
+
+                FROM StockTransferItems sti
+
+                INNER JOIN Products p
+                    ON p.Id = sti.ProductId
+
+                LEFT JOIN ProductBatches pb
+                    ON pb.Id = sti.BatchId
+
+                LEFT JOIN WarehouseLocations fl
+                    ON fl.Id = sti.FromLocationId
+
+                LEFT JOIN WarehouseLocations tl
+                    ON tl.Id = sti.ToLocationId
+
+                WHERE
+                    sti.StockTransferId =
+                        @transferId
+
+                ORDER BY
+                    sti.Id
+            `);
+
+        return res.status(200).json({
+            success: true,
+
+            data: {
+                transfer:
+                    headerResult.recordset[0],
+
+                items:
+                    itemsResult.recordset
+            }
+        });
+
+    } catch (error) {
+
+        console.error(
+            "Get stock transfer by ID error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to get stock transfer"
+        });
+    }
+}

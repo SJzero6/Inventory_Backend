@@ -1240,3 +1240,133 @@ export async function approvePurchaseOrder(
         });
     }
 }
+
+export async function getPurchaseOrderReceivingStatus(
+    req: AuthRequest,
+    res: Response
+) {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const purchaseOrderId = Number(req.params.id);
+
+        if (!Number.isInteger(purchaseOrderId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid purchase order ID"
+            });
+        }
+
+        const db = getDatabase();
+
+        const request = db.request()
+            .input("purchaseOrderId", purchaseOrderId)
+            .input("companyId", req.user.companyId);
+
+        const result = await request.query(`
+            SELECT
+                po.Id,
+                po.PurchaseOrderNumber,
+                po.Status,
+                po.OrderDate,
+
+                poi.Id AS ItemId,
+
+                poi.ProductId,
+                p.ProductCode,
+                p.Name AS ProductName,
+
+                poi.OrderedQuantity,
+                poi.ReceivedQuantity,
+
+                (
+                    poi.OrderedQuantity -
+                    poi.ReceivedQuantity
+                ) AS RemainingQuantity,
+
+                poi.UnitCost,
+                poi.DiscountAmount,
+                poi.TaxAmount,
+                poi.TotalAmount,
+
+                CASE
+                    WHEN poi.ReceivedQuantity >= poi.OrderedQuantity
+                    THEN CAST(1 AS bit)
+                    ELSE CAST(0 AS bit)
+                END AS FullyReceived
+
+            FROM PurchaseOrders po
+
+            INNER JOIN PurchaseOrderItems poi
+                ON poi.PurchaseOrderId = po.Id
+
+            INNER JOIN Products p
+                ON p.Id = poi.ProductId
+
+            WHERE
+                po.Id = @purchaseOrderId
+                AND po.CompanyId = @companyId
+
+            ORDER BY
+                poi.Id
+        `);
+
+        if (result.recordset.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Purchase order not found"
+            });
+        }
+
+        const header = result.recordset[0];
+
+        const items = result.recordset.map(row => ({
+            itemId: row.ItemId,
+            productId: row.ProductId,
+            productCode: row.ProductCode,
+            productName: row.ProductName,
+            orderedQuantity: Number(row.OrderedQuantity),
+            receivedQuantity: Number(row.ReceivedQuantity),
+            remainingQuantity: Number(row.RemainingQuantity),
+            unitCost: Number(row.UnitCost),
+            discountAmount: Number(row.DiscountAmount),
+            taxAmount: Number(row.TaxAmount),
+            totalAmount: Number(row.TotalAmount),
+            fullyReceived: row.FullyReceived
+        }));
+
+        return res.status(200).json({
+            success: true,
+
+            purchaseOrder: {
+                id: header.Id,
+                purchaseOrderNumber:
+                    header.PurchaseOrderNumber,
+                status: header.Status,
+                orderDate: header.OrderDate
+            },
+
+            items
+        });
+
+    } catch (error) {
+
+        console.error(
+            "Get purchase order receiving status error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to get purchase order receiving status"
+        });
+    }
+}

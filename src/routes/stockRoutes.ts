@@ -6,7 +6,11 @@ import {
     adjustStock,
     transferStock,
     getStockTransactions,
-    getStockTransactionById
+    getStockTransactionById,
+    getStockAdjustments,
+    getStockAdjustmentById,
+    getStockTransfers,
+    getStockTransferById
 } from "../controllers/stockController";
 
 import {
@@ -31,6 +35,34 @@ router.get(
     getStock
 );
 
+
+router.get(
+    "/adjustments",
+    authenticate,
+    authorize("STOCK_VIEW"),
+    getStockAdjustments
+);
+
+router.get(
+    "/adjustments/:id",
+    authenticate,
+    authorize("STOCK_VIEW"),
+    getStockAdjustmentById
+);
+
+router.get(
+    "/transfers",
+    authenticate,
+    authorize("STOCK_VIEW"),
+    getStockTransfers
+);
+
+router.get(
+    "/transfers/:id",
+    authenticate,
+    authorize("STOCK_VIEW"),
+    getStockTransferById
+);
 
 // =========================
 // STOCK TRANSACTIONS
