@@ -1466,6 +1466,7 @@ export async function approveGoodsReceipt(
     }
 }
 
+
 // =====================================================
 // CANCEL GOODS RECEIPT
 // =====================================================
@@ -1474,38 +1475,44 @@ export async function cancelGoodsReceipt(
     req: AuthRequest,
     res: Response
 ) {
-    if (!req.user) {
-        return res.status(401).json({
-            success: false,
-            message: "Authentication required"
-        });
-    }
-
-    const receiptId = Number(req.params.id);
-
-    if (!Number.isInteger(receiptId)) {
-        return res.status(400).json({
-            success: false,
-            message: "Invalid goods receipt ID"
-        });
-    }
-
-    const db = getDatabase();
-    const transaction = new sql.Transaction(db);
+    let transaction: sql.Transaction | null = null;
 
     try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const goodsReceiptId = Number(req.params.id);
+
+        if (!Number.isInteger(goodsReceiptId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid goods receipt ID"
+            });
+        }
+
+        const db = getDatabase();
+
+        transaction = new sql.Transaction(db);
+
         await transaction.begin();
 
         // =================================================
-        // 1. GET RECEIPT
+        // 1. GET GOODS RECEIPT
         // =================================================
 
         const receiptRequest =
             new sql.Request(transaction);
 
         receiptRequest
-            .input("id", receiptId)
-            .input("companyId", req.user.companyId);
+            .input("id", goodsReceiptId)
+            .input(
+                "companyId",
+                req.user.companyId
+            );
 
         const receiptResult =
             await receiptRequest.query(`
@@ -1514,21 +1521,17 @@ export async function cancelGoodsReceipt(
                     CompanyId,
                     PurchaseOrderId,
                     WarehouseId,
-                    Status,
-                    ReceiptNumber
-                FROM GoodsReceipts
+                    Status
+                FROM GoodsReceipts WITH (UPDLOCK, ROWLOCK)
                 WHERE
                     Id = @id
                     AND CompanyId = @companyId
             `);
 
         if (receiptResult.recordset.length === 0) {
-            await transaction.rollback();
-
-            return res.status(404).json({
-                success: false,
-                message: "Goods receipt not found"
-            });
+            throw new Error(
+                "Goods receipt not found"
+            );
         }
 
         const receipt =
@@ -1539,78 +1542,84 @@ export async function cancelGoodsReceipt(
         // =================================================
 
         if (
-            receipt.Status !== "RECEIVED" &&
-            receipt.Status !== "APPROVED"
+            receipt.Status === "CANCELLED"
         ) {
-            await transaction.rollback();
-
-            return res.status(400).json({
-                success: false,
-                message:
-                    `Goods receipt cannot be cancelled because its status is ${receipt.Status}`
-            });
+            throw new Error(
+                "Goods receipt is already cancelled"
+            );
         }
 
         // =================================================
         // 3. GET RECEIPT ITEMS
         // =================================================
 
-        const itemsRequest =
+        const receiptItemsRequest =
             new sql.Request(transaction);
 
-        itemsRequest.input(
-            "goodsReceiptId",
-            receiptId
-        );
+        receiptItemsRequest
+            .input(
+                "goodsReceiptId",
+                goodsReceiptId
+            );
 
-        const itemsResult =
-            await itemsRequest.query(`
+        const receiptItemsResult =
+            await receiptItemsRequest.query(`
                 SELECT
                     Id,
+                    GoodsReceiptId,
                     ProductId,
                     BatchId,
                     LocationId,
                     ReceivedQuantity,
                     UnitCost
                 FROM GoodsReceiptItems
-                WHERE GoodsReceiptId = @goodsReceiptId
+                WITH (UPDLOCK, ROWLOCK)
+                WHERE
+                    GoodsReceiptId =
+                        @goodsReceiptId
             `);
 
-        if (itemsResult.recordset.length === 0) {
-            await transaction.rollback();
-
-            return res.status(400).json({
-                success: false,
-                message:
-                    "Cannot cancel a goods receipt without items"
-            });
+        if (
+            receiptItemsResult.recordset.length === 0
+        ) {
+            throw new Error(
+                "No goods receipt items found"
+            );
         }
 
         // =================================================
-        // 4. PROCESS EACH ITEM
+        // 4. REVERSE EACH STOCK ITEM
         // =================================================
 
-        for (const item of itemsResult.recordset) {
+        for (
+            const item
+            of receiptItemsResult.recordset
+        ) {
 
             const productId =
                 Number(item.ProductId);
 
-            const quantity =
-                Number(item.ReceivedQuantity);
-
             const batchId =
-                item.BatchId !== null
-                    ? Number(item.BatchId)
-                    : null;
+                item.BatchId === null
+                    ? null
+                    : Number(item.BatchId);
 
             const locationId =
-                item.LocationId !== null
-                    ? Number(item.LocationId)
-                    : null;
+                item.LocationId === null
+                    ? null
+                    : Number(item.LocationId);
 
-            // =================================================
-            // FIND STOCK
-            // =================================================
+            const quantity =
+                Number(
+                    item.ReceivedQuantity
+                );
+
+            const unitCost =
+                Number(item.UnitCost);
+
+            // =============================================
+            // FIND STOCK RECORD
+            // =============================================
 
             const stockRequest =
                 new sql.Request(transaction);
@@ -1626,7 +1635,9 @@ export async function cancelGoodsReceipt(
                 )
                 .input(
                     "warehouseId",
-                    receipt.WarehouseId
+                    Number(
+                        receipt.WarehouseId
+                    )
                 )
                 .input(
                     "locationId",
@@ -1641,21 +1652,28 @@ export async function cancelGoodsReceipt(
                 await stockRequest.query(`
                     SELECT
                         Id,
-                        Quantity
+                        Quantity,
+                        AverageCost
                     FROM Stock
+                    WITH (UPDLOCK, ROWLOCK)
                     WHERE
                         CompanyId = @companyId
                         AND ProductId = @productId
-                        AND WarehouseId = @warehouseId
+                        AND WarehouseId =
+                            @warehouseId
+
                         AND (
-                            LocationId = @locationId
+                            LocationId =
+                                @locationId
                             OR (
                                 LocationId IS NULL
                                 AND @locationId IS NULL
                             )
                         )
+
                         AND (
-                            BatchId = @batchId
+                            BatchId =
+                                @batchId
                             OR (
                                 BatchId IS NULL
                                 AND @batchId IS NULL
@@ -1663,14 +1681,12 @@ export async function cancelGoodsReceipt(
                         )
                 `);
 
-            if (stockResult.recordset.length === 0) {
-                await transaction.rollback();
-
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        `Stock record not found for product ${productId}`
-                });
+            if (
+                stockResult.recordset.length === 0
+            ) {
+                throw new Error(
+                    `Stock record not found for ProductId ${productId}`
+                );
             }
 
             const stock =
@@ -1679,33 +1695,31 @@ export async function cancelGoodsReceipt(
             const currentQuantity =
                 Number(stock.Quantity);
 
-            // =================================================
-            // PROTECT AGAINST NEGATIVE STOCK
-            // =================================================
+            // =============================================
+            // PREVENT NEGATIVE STOCK
+            // =============================================
 
-            if (currentQuantity < quantity) {
-                await transaction.rollback();
-
-                return res.status(400).json({
-                    success: false,
-                    message:
-                        `Cannot cancel receipt. Current stock for product ${productId} is ${currentQuantity}, but ${quantity} needs to be reversed`
-                });
+            if (
+                currentQuantity < quantity
+            ) {
+                throw new Error(
+                    `Cannot cancel goods receipt. ProductId ${productId} has only ${currentQuantity} stock but ${quantity} needs to be reversed`
+                );
             }
 
             const newQuantity =
                 currentQuantity - quantity;
 
-            // =================================================
+            // =============================================
             // UPDATE STOCK
-            // =================================================
+            // =============================================
 
             const updateStockRequest =
                 new sql.Request(transaction);
 
             updateStockRequest
                 .input(
-                    "id",
+                    "stockId",
                     stock.Id
                 )
                 .input(
@@ -1718,17 +1732,18 @@ export async function cancelGoodsReceipt(
                 SET
                     Quantity = @quantity,
                     UpdatedAt = GETDATE()
-                WHERE Id = @id
+                WHERE
+                    Id = @stockId
             `);
 
-            // =================================================
-            // CREATE REVERSE STOCK TRANSACTION
-            // =================================================
+            // =============================================
+            // CREATE REVERSAL TRANSACTION
+            // =============================================
 
-            const transactionRequest =
+            const reversalRequest =
                 new sql.Request(transaction);
 
-            transactionRequest
+            reversalRequest
                 .input(
                     "companyId",
                     req.user.companyId
@@ -1739,7 +1754,9 @@ export async function cancelGoodsReceipt(
                 )
                 .input(
                     "warehouseId",
-                    receipt.WarehouseId
+                    Number(
+                        receipt.WarehouseId
+                    )
                 )
                 .input(
                     "locationId",
@@ -1750,35 +1767,23 @@ export async function cancelGoodsReceipt(
                     batchId
                 )
                 .input(
-                    "transactionType",
-                    "RECEIPT_REVERSAL"
-                )
-                .input(
-                    "referenceType",
-                    "GOODS_RECEIPT_CANCEL"
-                )
-                .input(
-                    "referenceId",
-                    receiptId
-                )
-                .input(
                     "quantity",
                     -quantity
                 )
                 .input(
                     "unitCost",
-                    Number(item.UnitCost)
+                    unitCost
                 )
                 .input(
                     "createdBy",
                     req.user.userId
                 )
                 .input(
-                    "notes",
-                    `Cancellation of goods receipt ${receipt.ReceiptNumber}`
+                    "referenceId",
+                    goodsReceiptId
                 );
 
-            await transactionRequest.query(`
+            await reversalRequest.query(`
                 INSERT INTO StockTransactions
                 (
                     CompanyId,
@@ -1802,140 +1807,192 @@ export async function cancelGoodsReceipt(
                     @warehouseId,
                     @locationId,
                     @batchId,
-                    @transactionType,
-                    @referenceType,
+                    'RECEIPT_REVERSAL',
+                    'GOODS_RECEIPT',
                     @referenceId,
                     @quantity,
                     @unitCost,
                     GETDATE(),
                     @createdBy,
-                    @notes
+                    'Goods receipt cancellation'
                 )
             `);
-
-            // =================================================
-            // RESTORE PO RECEIVED QUANTITY
-            // =================================================
-
-            if (receipt.PurchaseOrderId) {
-
-                const poItemRequest =
-                    new sql.Request(transaction);
-
-                poItemRequest
-                    .input(
-                        "purchaseOrderId",
-                        receipt.PurchaseOrderId
-                    )
-                    .input(
-                        "productId",
-                        productId
-                    );
-
-                const poItemResult =
-                    await poItemRequest.query(`
-                        SELECT TOP 1
-                            Id,
-                            ReceivedQuantity
-                        FROM PurchaseOrderItems
-                        WHERE
-                            PurchaseOrderId =
-                                @purchaseOrderId
-                            AND ProductId =
-                                @productId
-                        ORDER BY Id
-                    `);
-
-                if (
-                    poItemResult.recordset.length > 0
-                ) {
-                    const poItem =
-                        poItemResult.recordset[0];
-
-                    const currentReceived =
-                        Number(
-                            poItem.ReceivedQuantity
-                        );
-
-                    const newReceived =
-                        Math.max(
-                            0,
-                            currentReceived - quantity
-                        );
-
-                    const updatePOItemRequest =
-                        new sql.Request(transaction);
-
-                    updatePOItemRequest
-                        .input(
-                            "id",
-                            poItem.Id
-                        )
-                        .input(
-                            "receivedQuantity",
-                            newReceived
-                        );
-
-                    await updatePOItemRequest.query(`
-                        UPDATE PurchaseOrderItems
-                        SET
-                            ReceivedQuantity =
-                                @receivedQuantity
-                        WHERE Id = @id
-                    `);
-                }
-            }
         }
 
         // =================================================
-        // 5. UPDATE PO STATUS
+        // 5. RECALCULATE PO RECEIVED QUANTITIES
         // =================================================
 
-        if (receipt.PurchaseOrderId) {
+        if (
+            receipt.PurchaseOrderId !== null
+        ) {
 
-            const statusRequest =
+            const poId =
+                Number(
+                    receipt.PurchaseOrderId
+                );
+
+            const poItemsRequest =
                 new sql.Request(transaction);
 
-            statusRequest.input(
-                "purchaseOrderId",
-                receipt.PurchaseOrderId
-            );
+            poItemsRequest
+                .input(
+                    "purchaseOrderId",
+                    poId
+                );
 
-            const statusResult =
-                await statusRequest.query(`
+            const poItemsResult =
+                await poItemsRequest.query(`
                     SELECT
-                        SUM(OrderedQuantity)
-                            AS TotalOrdered,
-                        SUM(ReceivedQuantity)
-                            AS TotalReceived
+                        Id,
+                        ProductId
                     FROM PurchaseOrderItems
-                    WHERE PurchaseOrderId =
-                        @purchaseOrderId
+                    WITH (UPDLOCK, ROWLOCK)
+                    WHERE
+                        PurchaseOrderId =
+                            @purchaseOrderId
+                `);
+
+            for (
+                const poItem
+                of poItemsResult.recordset
+            ) {
+
+                const receivedRequest =
+                    new sql.Request(transaction);
+
+                receivedRequest
+                    .input(
+                        "purchaseOrderId",
+                        poId
+                    )
+                    .input(
+                        "productId",
+                        Number(
+                            poItem.ProductId
+                        )
+                    );
+
+                const receivedResult =
+                    await receivedRequest.query(`
+                        SELECT
+                            ISNULL(
+                                SUM(
+                                    gri.ReceivedQuantity
+                                ),
+                                0
+                            ) AS ReceivedQuantity
+
+                        FROM GoodsReceiptItems gri
+
+                        INNER JOIN GoodsReceipts gr
+                            ON gr.Id =
+                                gri.GoodsReceiptId
+
+                        WHERE
+                            gr.PurchaseOrderId =
+                                @purchaseOrderId
+
+                            AND gri.ProductId =
+                                @productId
+
+                            AND gr.Status <>
+                                'CANCELLED'
+                    `);
+
+                const receivedQuantity =
+                    Number(
+                        receivedResult
+                            .recordset[0]
+                            .ReceivedQuantity || 0
+                    );
+
+                const updateItemRequest =
+                    new sql.Request(transaction);
+
+                updateItemRequest
+                    .input(
+                        "itemId",
+                        poItem.Id
+                    )
+                    .input(
+                        "receivedQuantity",
+                        receivedQuantity
+                    );
+
+                await updateItemRequest.query(`
+                    UPDATE PurchaseOrderItems
+                    SET
+                        ReceivedQuantity =
+                            @receivedQuantity
+                    WHERE
+                        Id = @itemId
+                `);
+            }
+
+            // =================================================
+            // 6. RECALCULATE PO STATUS
+            // =================================================
+
+            const poTotalsRequest =
+                new sql.Request(transaction);
+
+            poTotalsRequest
+                .input(
+                    "purchaseOrderId",
+                    poId
+                );
+
+            const poTotalsResult =
+                await poTotalsRequest.query(`
+                    SELECT
+                        ISNULL(
+                            SUM(OrderedQuantity),
+                            0
+                        ) AS TotalOrdered,
+
+                        ISNULL(
+                            SUM(ReceivedQuantity),
+                            0
+                        ) AS TotalReceived
+
+                    FROM PurchaseOrderItems
+
+                    WHERE
+                        PurchaseOrderId =
+                            @purchaseOrderId
                 `);
 
             const totals =
-                statusResult.recordset[0];
+                poTotalsResult.recordset[0];
 
             const totalOrdered =
-                Number(totals.TotalOrdered || 0);
+                Number(
+                    totals.TotalOrdered || 0
+                );
 
             const totalReceived =
-                Number(totals.TotalReceived || 0);
+                Number(
+                    totals.TotalReceived || 0
+                );
 
-            let poStatus = "APPROVED";
+            let poStatus =
+                "APPROVED";
 
             if (
                 totalReceived > 0 &&
                 totalReceived < totalOrdered
             ) {
-                poStatus = "PARTIALLY_RECEIVED";
+                poStatus =
+                    "PARTIALLY_RECEIVED";
             }
 
             if (
                 totalOrdered > 0 &&
                 totalReceived >= totalOrdered
             ) {
-                poStatus = "FULLY_RECEIVED";
+                poStatus =
+                    "FULLY_RECEIVED";
             }
 
             const updatePORequest =
@@ -1944,11 +2001,15 @@ export async function cancelGoodsReceipt(
             updatePORequest
                 .input(
                     "purchaseOrderId",
-                    receipt.PurchaseOrderId
+                    poId
                 )
                 .input(
                     "status",
                     poStatus
+                )
+                .input(
+                    "companyId",
+                    req.user.companyId
                 );
 
             await updatePORequest.query(`
@@ -1956,31 +2017,40 @@ export async function cancelGoodsReceipt(
                 SET
                     Status = @status,
                     UpdatedAt = GETDATE()
-                WHERE Id = @purchaseOrderId
+                WHERE
+                    Id = @purchaseOrderId
+                    AND CompanyId = @companyId
             `);
         }
 
         // =================================================
-        // 6. CANCEL RECEIPT
+        // 7. CANCEL GOODS RECEIPT
         // =================================================
 
         const cancelRequest =
             new sql.Request(transaction);
 
-        cancelRequest.input(
-            "id",
-            receiptId
-        );
+        cancelRequest
+            .input(
+                "goodsReceiptId",
+                goodsReceiptId
+            )
+            .input(
+                "companyId",
+                req.user.companyId
+            );
 
         await cancelRequest.query(`
             UPDATE GoodsReceipts
             SET
                 Status = 'CANCELLED'
-            WHERE Id = @id
+            WHERE
+                Id = @goodsReceiptId
+                AND CompanyId = @companyId
         `);
 
         // =================================================
-        // 7. COMMIT
+        // 8. COMMIT
         // =================================================
 
         await transaction.commit();
@@ -1989,21 +2059,23 @@ export async function cancelGoodsReceipt(
             success: true,
             message:
                 "Goods receipt cancelled successfully",
-            goodsReceiptId: receiptId
+            goodsReceiptId
         });
 
     } catch (error) {
 
-        try {
-            await transaction.rollback();
-        } catch {}
+        if (transaction) {
+            try {
+                await transaction.rollback();
+            } catch {}
+        }
 
         console.error(
             "Cancel goods receipt error:",
             error
         );
 
-        return res.status(500).json({
+        return res.status(400).json({
             success: false,
             message:
                 error instanceof Error

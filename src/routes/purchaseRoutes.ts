@@ -6,7 +6,9 @@ import {
     getPurchaseOrderById,
     updatePurchaseOrder,
     approvePurchaseOrder,
-    getPurchaseOrderReceivingStatus
+    getPurchaseOrderReceivingStatus,
+    cancelPurchaseOrder,
+    getPurchaseReport
 } from "../controllers/purchaseController";
 
 import {
@@ -63,6 +65,16 @@ router.put(
     updatePurchaseOrder
 );
 
+// =====================================================
+// Delete PURCHASE ORDER
+// =====================================================
+
+router.post(
+    "/:id/cancel",
+    authenticate,
+    authorize("PURCHASE_EDIT"),
+    cancelPurchaseOrder
+);
 
 // =====================================================
 // APPROVE PURCHASE ORDER
@@ -86,6 +98,13 @@ router.get(
     authenticate,
     authorize("PURCHASE_VIEW"),
     getPurchaseOrderById
+);
+
+router.get(
+    "/purchases",
+    authenticate,
+    authorize("REPORT_PURCHASE"),
+    getPurchaseReport
 );
 
 

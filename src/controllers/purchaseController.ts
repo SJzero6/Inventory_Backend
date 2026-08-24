@@ -1370,3 +1370,334 @@ export async function getPurchaseOrderReceivingStatus(
         });
     }
 }
+
+// =====================================================
+// CANCEL PURCHASE ORDER
+// =====================================================
+
+export async function cancelPurchaseOrder(
+    req: AuthRequest,
+    res: Response
+) {
+    let transaction: sql.Transaction | null = null;
+
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const purchaseOrderId =
+            Number(req.params.id);
+
+        if (!Number.isInteger(purchaseOrderId)) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid purchase order ID"
+            });
+        }
+
+        const db = getDatabase();
+
+        transaction =
+            new sql.Transaction(db);
+
+        await transaction.begin();
+
+        // =================================================
+        // 1. GET PO
+        // =================================================
+
+        const poRequest =
+            new sql.Request(transaction);
+
+        poRequest
+            .input(
+                "id",
+                purchaseOrderId
+            )
+            .input(
+                "companyId",
+                req.user.companyId
+            );
+
+        const poResult =
+            await poRequest.query(`
+                SELECT
+                    Id,
+                    CompanyId,
+                    Status
+                FROM PurchaseOrders
+                WITH (UPDLOCK, ROWLOCK)
+                WHERE
+                    Id = @id
+                    AND CompanyId = @companyId
+            `);
+
+        if (poResult.recordset.length === 0) {
+            throw new Error(
+                "Purchase order not found"
+            );
+        }
+
+        const purchaseOrder =
+            poResult.recordset[0];
+
+        // =================================================
+        // 2. CHECK CURRENT STATUS
+        // =================================================
+
+        if (
+            purchaseOrder.Status ===
+            "CANCELLED"
+        ) {
+            throw new Error(
+                "Purchase order is already cancelled"
+            );
+        }
+
+        if (
+            purchaseOrder.Status ===
+            "FULLY_RECEIVED"
+        ) {
+            throw new Error(
+                "Cannot cancel a fully received purchase order"
+            );
+        }
+
+        // =================================================
+        // 3. CHECK ACTIVE GOODS RECEIPTS
+        // =================================================
+
+        const receiptRequest =
+            new sql.Request(transaction);
+
+        receiptRequest
+            .input(
+                "purchaseOrderId",
+                purchaseOrderId
+            )
+            .input(
+                "companyId",
+                req.user.companyId
+            );
+
+        const receiptResult =
+            await receiptRequest.query(`
+                SELECT
+                    COUNT(*) AS ReceiptCount
+                FROM GoodsReceipts
+                WHERE
+                    PurchaseOrderId =
+                        @purchaseOrderId
+                    AND CompanyId =
+                        @companyId
+                    AND Status <> 'CANCELLED'
+            `);
+
+        const receiptCount =
+            Number(
+                receiptResult
+                    .recordset[0]
+                    .ReceiptCount
+            );
+
+        if (receiptCount > 0) {
+            throw new Error(
+                "Cannot cancel purchase order because active goods receipts exist. Cancel the goods receipts first."
+            );
+        }
+
+        // =================================================
+        // 4. CANCEL PURCHASE ORDER
+        // =================================================
+
+        const updateRequest =
+            new sql.Request(transaction);
+
+        updateRequest
+            .input(
+                "purchaseOrderId",
+                purchaseOrderId
+            )
+            .input(
+                "companyId",
+                req.user.companyId
+            );
+
+        await updateRequest.query(`
+            UPDATE PurchaseOrders
+            SET
+                Status = 'CANCELLED',
+                UpdatedAt = GETDATE()
+            WHERE
+                Id = @purchaseOrderId
+                AND CompanyId = @companyId
+        `);
+
+        // =================================================
+        // 5. COMMIT
+        // =================================================
+
+        await transaction.commit();
+
+        return res.status(200).json({
+            success: true,
+            message:
+                "Purchase order cancelled successfully",
+            purchaseOrderId
+        });
+
+    } catch (error) {
+
+        if (transaction) {
+            try {
+                await transaction.rollback();
+            } catch {}
+        }
+
+        console.error(
+            "Cancel purchase order error:",
+            error
+        );
+
+        return res.status(400).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to cancel purchase order"
+        });
+    }
+}
+
+export async function getPurchaseReport(
+    req: AuthRequest,
+    res: Response
+) {
+    try {
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+        }
+
+        const request = new sql.Request();
+
+        request.input(
+            "companyId",
+            req.user.companyId
+        );
+
+        const result = await request.query(`
+            SELECT
+                po.Id,
+                po.PurchaseOrderNumber,
+                po.OrderDate,
+                po.Status,
+
+                po.BranchId,
+                b.Name AS BranchName,
+
+                po.WarehouseId,
+                w.Name AS WarehouseName,
+
+                po.SupplierId,
+                s.Name AS SupplierName,
+
+                po.SubTotal,
+                po.DiscountAmount,
+                po.TaxAmount,
+                po.TotalAmount,
+
+                ISNULL(
+                    SUM(poi.OrderedQuantity),
+                    0
+                ) AS OrderedQuantity,
+
+                ISNULL(
+                    SUM(poi.ReceivedQuantity),
+                    0
+                ) AS ReceivedQuantity,
+
+                ISNULL(
+                    SUM(
+                        poi.OrderedQuantity -
+                        poi.ReceivedQuantity
+                    ),
+                    0
+                ) AS PendingQuantity,
+
+                po.CreatedAt,
+                po.UpdatedAt
+
+            FROM PurchaseOrders po
+
+            INNER JOIN Branches b
+                ON b.Id = po.BranchId
+
+            INNER JOIN Warehouses w
+                ON w.Id = po.WarehouseId
+
+            INNER JOIN Suppliers s
+                ON s.Id = po.SupplierId
+
+            LEFT JOIN PurchaseOrderItems poi
+                ON poi.PurchaseOrderId = po.Id
+
+            WHERE
+                po.CompanyId = @companyId
+
+            GROUP BY
+                po.Id,
+                po.PurchaseOrderNumber,
+                po.OrderDate,
+                po.Status,
+
+                po.BranchId,
+                b.Name,
+
+                po.WarehouseId,
+                w.Name,
+
+                po.SupplierId,
+                s.Name,
+
+                po.SubTotal,
+                po.DiscountAmount,
+                po.TaxAmount,
+                po.TotalAmount,
+
+                po.CreatedAt,
+                po.UpdatedAt
+
+            ORDER BY
+                po.OrderDate DESC,
+                po.Id DESC
+        `);
+
+        return res.status(200).json({
+            success: true,
+            count: result.recordset.length,
+            purchases: result.recordset
+        });
+
+    } catch (error) {
+
+        console.error(
+            "Get purchase report error:",
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to get purchase report"
+        });
+    }
+}
