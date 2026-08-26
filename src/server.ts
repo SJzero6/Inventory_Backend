@@ -17,6 +17,7 @@ import stockRoutes from "./routes/stockRoutes";
 import purchaseRoutes from "./routes/purchaseRoutes";
 import receivingRoutes from "./routes/receivingRoutes";
 import reportRoutes from "./routes/reportRoutes";
+import productBatchRoutes from "./routes/productBatchRoutes";
 dotenv.config();
 
 const app = express();
@@ -38,6 +39,7 @@ app.use("/api/stock", stockRoutes);
 app.use("/api/purchases", purchaseRoutes);
 app.use("/api/receiving", receivingRoutes);
 app.use("/api/reports", reportRoutes);
+app.use("/api/product-batches", productBatchRoutes);
 
 const PORT = Number(process.env.PORT) || 5000;
 
